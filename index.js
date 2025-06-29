@@ -3,6 +3,8 @@ const app = express();
 require("dotenv").config();
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
+const nodemailer = require("nodemailer");
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const {
   MongoClient,
   ServerApiVersion,
@@ -23,6 +25,44 @@ app.use(cors(corsOptions));
 
 app.use(express.json());
 app.use(cookieParser());
+
+// email send
+const sendEmail = (emailAddress, emailData) => {
+  const transporter = nodemailer.createTransport({
+    service: "gmail",
+    host: "smtp.gmail.com",
+    port: 587,
+    secure: false, // true for 465, false for other ports
+    auth: {
+      user: process.env.TRANSPORTER_EMAIL,
+      pass: process.env.TRANSPORTER_PASS,
+    },
+  });
+  // Callback style
+  transporter.verify((error, success) => {
+    if (error) {
+      console.error(error);
+    } else {
+      console.log("Server is ready to take our messages");
+    }
+  });
+  const emailBody = {
+    from: `"HotelRoom Management" <${process.env.TRANSPORTER_EMAIL}>`,
+    to: emailAddress,
+    subject: emailData.subject,
+
+    html: emailData.message,
+  };
+  transporter.sendMail(emailBody, (error) => {
+    if (error) {
+      console.log(error);
+    } else {
+      console.log("Email send" );
+    }
+  });
+
+  console.log("Message sent:", );
+};
 
 // Verify Token Middleware
 const verifyToken = async (req, res, next) => {
@@ -53,8 +93,29 @@ const client = new MongoClient(uri, {
 async function run() {
   try {
     // collections
-    const roomsCollection = client.db("hotel-management").collection("rooms");
-    const usersCollection = client.db("hotel-management").collection("users");
+    const db = client.db("hotel-management");
+    const roomsCollection = db.collection("rooms");
+    const usersCollection = db.collection("users");
+    const bookingsCollection = db.collection("bookings");
+
+    // verify admin
+    const verifyAdmin = async (req, res, next) => {
+      const user = req.user;
+      const query = { email: user?.email };
+      const result = await usersCollection.findOne(query);
+      if (!result && result?.role !== "admin")
+        return res.status(401).send({ message: "Bad Access" });
+      next();
+    };
+    // verify host
+    const verifyHost = async (req, res, next) => {
+      const user = req.user;
+      const query = { email: user?.email };
+      const result = await usersCollection.findOne(query);
+      if (!result && result?.role !== "host")
+        return res.status(401).send({ message: "Bad Access" });
+      next();
+    };
 
     // auth related api
     app.post("/jwt", async (req, res) => {
@@ -86,6 +147,23 @@ async function run() {
       }
     });
 
+    // payment create intent
+    app.post("/create-payment-intent", verifyToken, async (req, res) => {
+      const price = req.body.price;
+      const priceInCent = parseInt(price) * 100;
+      if (!price || priceInCent < 1) return;
+      // generate client secret
+      const { client_secret } = await stripe.paymentIntents.create({
+        amount: priceInCent,
+        currency: "usd",
+        automatic_payment_methods: {
+          enabled: true,
+        },
+      });
+      // send client secret as a response
+      res.send({ clientSecret: client_secret });
+    });
+
     // save User
     app.put("/user", async (req, res) => {
       const user = req.body;
@@ -101,9 +179,9 @@ async function run() {
           const result = await usersCollection.updateOne(query, {
             $set: { status: user.status },
           });
-          return res.send(result); 
+          return res.send(result);
         } else {
-          return res.send(isExist); 
+          return res.send(isExist);
         }
       }
 
@@ -120,18 +198,40 @@ async function run() {
         updatedDoc,
         options
       );
-      return res.send(result); 
+      return res.send(result);
     });
 
     // get a user info by email from bd
-    app.get('/user/:email',async(req,res)=>{
-      const email=req.params.email;
-      const result=await usersCollection.findOne({email});
-      res.send(result)
-    })
+    app.get("/user/:email", async (req, res) => {
+      const email = req.params.email;
+      const result = await usersCollection.findOne({ email });
+      res.send(result);
+    });
+
+    // update user role
+    app.patch(
+      "/user/update/:email",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const email = req.params.email;
+        console.log(email);
+
+        const query = { email };
+        const user = req.body;
+        const updatedDoc = {
+          $set: {
+            ...user,
+            Timestamp: Date.now(),
+          },
+        };
+        const result = await usersCollection.updateOne(query, updatedDoc);
+        res.send(result);
+      }
+    );
 
     // get all users
-    app.get("/users", async (req, res) => {
+    app.get("/users", verifyToken, verifyAdmin, async (req, res) => {
       const result = await usersCollection.find().toArray();
       res.send(result);
     });
@@ -153,13 +253,25 @@ async function run() {
       res.send(result);
     });
     // add a new room
-    app.post("/room", async (req, res) => {
+    app.post("/room", verifyToken, verifyHost, async (req, res) => {
       const roomData = req.body;
       const result = await roomsCollection.insertOne(roomData);
       res.send(result);
     });
+
+    // update roomData
+    app.put("/room/update/:id", verifyToken, verifyHost, async (req, res) => {
+      const id = req.params.id;
+      const roomData = req.body;
+      const query = { _id: new ObjectId(id) };
+      const updatedDoc = {
+        $set: roomData,
+      };
+      const result = await roomsCollection.updateOne(query, updatedDoc);
+      res.send(result);
+    });
     // delete a room
-    app.delete("/roomDelete/:id", async (req, res) => {
+    app.delete("/roomDelete/:id", verifyToken, verifyHost, async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
       const result = await roomsCollection.deleteOne(query);
@@ -171,6 +283,164 @@ async function run() {
       const id = req.params.id;
       const result = await roomsCollection.findOne({ _id: new ObjectId(id) });
       res.send(result);
+    });
+
+    // save a booking data in db
+    app.post("/bookings", async (req, res) => {
+      const bookingData = req.body;
+      // save booking info
+      const result = await bookingsCollection.insertOne(bookingData);
+      // send email to guest
+      sendEmail(bookingData?.guest?.email, {
+        subject: "Your room booking is successful!!!!!!",
+        message: `You have successfully booked a room throw hotelRoom management .transaction id:${bookingData.transactionId}`,
+      });
+      // send email to the host
+      sendEmail(bookingData?.host?.email, {
+        subject: "Your room got booked successful!!!!!!",
+        message: `Get ready to wellCome ${bookingData?.guest?.name}`,
+      });
+
+      res.send(result);
+    });
+
+    // update room status
+    app.patch("/room/status/:id", async (req, res) => {
+      const id = req.params.id;
+      const status = req.body.status;
+      const query = { _id: new ObjectId(id) };
+      const updatedDoc = {
+        $set: { booked: status },
+      };
+      const result = await roomsCollection.updateOne(query, updatedDoc);
+      res.send(result);
+    });
+
+    // manage bookings
+    app.get("/manage-bookings/:email", async (req, res) => {
+      const email = req.params.email;
+      const query = { "host.email": email };
+
+      const result = await bookingsCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    // get my bookings
+    app.get("/my-bookings/:email", async (req, res) => {
+      const email = req.params.email;
+      const query = { "guest.email": email };
+      const result = await bookingsCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    // cancel bookings
+    app.delete("/booking/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await bookingsCollection.deleteOne(query);
+      res.send(result);
+    });
+    // admin statistics
+    app.get("/admin-stat", verifyToken, verifyAdmin, async (req, res) => {
+      const bookingsDetails = await bookingsCollection
+        .find(
+          {},
+          {
+            projection: {
+              date: 1,
+              price: 1,
+            },
+          }
+        )
+        .toArray();
+      const chartData = bookingsDetails.map((booking) => {
+        const day = new Date(booking.date).getDate();
+        const month = new Date(booking.date).getMonth();
+        const data = [`${day}/${month}`, booking.price];
+        return data;
+      });
+      // ['Day', 'Sales'] add in this array;
+      chartData.unshift(["Day", "Sales"]);
+
+      const totalUser = await usersCollection.countDocuments();
+      const totalRooms = await roomsCollection.countDocuments();
+      const totalPrice = bookingsDetails.reduce(
+        (sum, item) => sum + item.price,
+        0
+      );
+      res.send({
+        totalUser,
+        totalRooms,
+        totalPrice,
+        totalBookings: bookingsDetails.length,
+        chartData,
+      });
+    });
+    // host statistics
+    app.get("/host-stat", verifyToken, verifyHost, async (req, res) => {
+      const { email } = req?.user;
+      const bookingsDetails = await bookingsCollection
+        .find(
+          { "host.email": email },
+          {
+            projection: {
+              date: 1,
+              price: 1,
+            },
+          }
+        )
+        .toArray();
+      const chartData = bookingsDetails.map((booking) => {
+        const day = new Date(booking.date).getDate();
+        const month = new Date(booking.date).getMonth();
+        const data = [`${day}/${month}`, booking.price];
+        return data;
+      });
+      // ['Day', 'Sales'] add in this array;
+      chartData.unshift(["Day", "Sales"]);
+
+      const totalUser = await usersCollection.countDocuments();
+      const totalRooms = await roomsCollection.countDocuments();
+      const totalPrice = bookingsDetails.reduce(
+        (sum, item) => sum + item.price,
+        0
+      );
+      const { Timestamp } = await usersCollection.findOne({ email });
+      res.send({
+        totalUser,
+        totalRooms,
+        totalPrice,
+        totalBooking: bookingsDetails.length,
+        chartData,
+        Timestamp,
+      });
+    });
+
+    app.get("/guest-stat", verifyToken, async (req, res) => {
+      const { email } = req.user;
+      const bookingsDetails = await bookingsCollection
+        .find({ "guest.email": email })
+        .toArray();
+
+      const chartData = bookingsDetails.map((booking) => {
+        const day = new Date(booking.date).getDate();
+        const month = new Date(booking.date).getMonth();
+        const data = [`${day}/${month}`, booking?.price];
+        return data;
+      });
+      chartData.unshift(["day", "sales"]);
+
+      const totalPrice = bookingsDetails.reduce(
+        (sum, item) => sum + item.price,
+        0
+      );
+      const { Timestamp } = await usersCollection.findOne({ email });
+      res.send({
+        totalPrice,
+        Timestamp,
+        totalBooking: bookingsDetails?.length,
+        chartData,
+      });
     });
 
     // Send a ping to confirm a successful connection
