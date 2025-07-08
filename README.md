@@ -1,33 +1,37 @@
-# Hotel Rental Management System  🏨
+# Hotel Rental Management System - Server Side 🏨
 
-This is the **client-side** of the Hotel Rental Management web application. It offers interfaces for **guests**, **hosts**, and **admins** to manage hotel rooms, reservations, and user roles.
+This is the **server-side** of the Hotel Rental Management application. It handles user authentication, role management, host approvals, and room CRUD operations through RESTful APIs.
 
 ---
 
-## 🔑 User Roles
+## 📌 Main Features
 
-- **Guest:**
-  - Browse available rooms
+- **Authentication & Authorization:**
+  - JWT-based login system
+  - Role-based access control (guest, host, admin)
+
+- **Admin Panel:**
+  - Approve host requests
+  - Manage users and their roles
+
+- **Guest Panel:**
   - Request to become a host
 
-- **Host (after admin approval):**
+- **Host Panel:**
   - Add new rooms
   - Update room details
-  - Delete listed rooms
-
-- **Admin:**
-  - Approve or deny host requests
-  - Manage users and roles
+  - Delete existing rooms
 
 ---
 
-## 🚀 Technologies Used
+## ⚙️ Technologies Used
 
-- **React.js**
-- **React Router DOM**
-- **Axios** (with interceptor setup)
-- **Tailwind CSS**
-- **JWT Authentication**
-- **Vercel** (for deployment)
+- **Node.js**
+- **Express.js**
+- **MongoDB** (with Mongoose)
+- **JWT** for secure authentication
+- **Cookie-parser** for handling cookies
+- **CORS** for cross-origin requests
+- **dotenv** for environment variables
 
 ---
